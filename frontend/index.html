@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Skyboom Breaks</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #f5f6f8;
+      color: #1f2933;
+    }
+    .card {
+      background: #fff;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      margin-bottom: 16px;
+    }
+    .row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    select, button {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #cbd2d9;
+      font-size: 14px;
+    }
+    button {
+      cursor: pointer;
+      border: none;
+      background: #1d4ed8;
+      color: #fff;
+      font-weight: 600;
+    }
+    button[disabled] {
+      background: #9aa5b1;
+      cursor: not-allowed;
+    }
+    .status {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #e0e7ff;
+      color: #3730a3;
+    }
+    .sidebar {
+      min-width: 220px;
+      flex: 1;
+    }
+    .main {
+      flex: 2;
+      min-width: 300px;
+    }
+    .muted {
+      color: #7b8794;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="onboarding">
+    <h2>Первичный онбординг</h2>
+    <div class="row">
+      <div>
+        <label for="bank">Банк</label>
+        <select id="bank">
+          <option value="Leobank">Leobank</option>
+          <option value="Unibank">Unibank</option>
+        </select>
+      </div>
+      <div>
+        <label for="department">Подразделение</label>
+        <select id="department"></select>
+      </div>
+      <div>
+        <label for="direction">Направление</label>
+        <select id="direction"></select>
+      </div>
+    </div>
+    <button id="confirmOnboarding">Подтвердить</button>
+    <p class="muted">Онбординг отображается только один раз.</p>
+  </div>
+
+  <div class="row">
+    <div class="card main">
+      <h2>Основной экран</h2>
+      <p>Текущий статус: <span class="status" id="currentStatus">Нет заявки</span></p>
+      <div class="row">
+        <button id="newRequest">Новый запрос</button>
+        <select id="duration">
+          <option value="5">5 минут</option>
+          <option value="7">7 минут</option>
+          <option value="10">10 минут</option>
+        </select>
+        <button id="startBreak" disabled>Начать перерыв</button>
+        <button id="finishBreak" disabled>Завершить перерыв</button>
+      </div>
+      <p id="timers" class="muted">Таймеры появятся после создания заявки.</p>
+      <p id="cooldown" class="muted"></p>
+    </div>
+    <div class="card sidebar">
+      <h3>Боковая панель</h3>
+      <p>Очередь: <span id="queue">-</span></p>
+      <p>Слоты: <span id="slots">-</span></p>
+      <p>Направление: <span id="directionLabel">-</span></p>
+    </div>
+  </div>
+
+  <script>
+    const operatorId = "demo-operator";
+    const apiBase = "http://localhost:8000/api";
+
+    const bankSelect = document.getElementById("bank");
+    const departmentSelect = document.getElementById("department");
+    const directionSelect = document.getElementById("direction");
+
+    const onboardingCard = document.getElementById("onboarding");
+    const currentStatus = document.getElementById("currentStatus");
+    const newRequestBtn = document.getElementById("newRequest");
+    const startBreakBtn = document.getElementById("startBreak");
+    const finishBreakBtn = document.getElementById("finishBreak");
+    const directionLabel = document.getElementById("directionLabel");
+    const queueLabel = document.getElementById("queue");
+    const slotsLabel = document.getElementById("slots");
+    const durationSelect = document.getElementById("duration");
+    const timersLabel = document.getElementById("timers");
+    const cooldownLabel = document.getElementById("cooldown");
+
+    const departments = {
+      Leobank: ["Кол-центр", "МЭО", "HD", "SD", "SOFT", "HARD", "Underwriting", "NPS", "Telemarketing"],
+      Unibank: ["Кол-центр"],
+    };
+
+    const directions = ["Чат", "Звонок"];
+
+    const statusOrder = {
+      "Ожидание": "Ожидание",
+      "Одобрено": "Одобрено",
+      "Активно": "Активно",
+      "Завершено": "Завершено",
+      "Отклонено": "Отклонено",
+    };
+
+    function updateDepartments() {
+      departmentSelect.innerHTML = "";
+      departments[bankSelect.value].forEach((dept) => {
+        const option = document.createElement("option");
+        option.value = dept;
+        option.textContent = dept;
+        departmentSelect.appendChild(option);
+      });
+      updateDirections();
+    }
+
+    function updateDirections() {
+      directionSelect.innerHTML = "";
+      if (departmentSelect.value === "Кол-центр") {
+        directions.forEach((dir) => {
+          const option = document.createElement("option");
+          option.value = dir;
+          option.textContent = dir;
+          directionSelect.appendChild(option);
+        });
+        directionSelect.disabled = false;
+      } else {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "Не используется";
+        directionSelect.appendChild(option);
+        directionSelect.disabled = true;
+      }
+    }
+
+    function updateButtons(latestRequest, cooldownRemaining) {
+      const status = latestRequest?.status;
+      const hasActive = ["Ожидание", "Одобрено", "Активно"].includes(status);
+      newRequestBtn.disabled = hasActive || Boolean(cooldownRemaining);
+      startBreakBtn.disabled = status !== "Одобрено";
+      finishBreakBtn.disabled = status !== "Активно";
+    }
+
+    function formatSeconds(seconds) {
+      if (seconds === null || seconds === undefined) return "-";
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins}м ${secs}с`;
+    }
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch(`${apiBase}/operator`, {
+          headers: { "X-User-Id": operatorId },
+        });
+        if (!response.ok) {
+          onboardingCard.style.display = "block";
+          return;
+        }
+        const data = await response.json();
+        onboardingCard.style.display = "none";
+        directionLabel.textContent = data.binding.direction || "-";
+        if (data.queue_position) {
+          queueLabel.textContent = `${data.queue_position} (впереди ${data.queue_ahead})`;
+        } else {
+          queueLabel.textContent = "-";
+        }
+        slotsLabel.textContent = `${data.occupied_slots}/${data.limit}`;
+        const status = data.latest_request?.status;
+        currentStatus.textContent = status ? statusOrder[status] : "Нет заявки";
+        updateButtons(data.latest_request, data.cooldown_remaining_seconds);
+        const now = Date.now();
+        let timersText = "Таймеры появятся после создания заявки.";
+        if (data.auto_reject_at) {
+          const autoRejectAt = new Date(data.auto_reject_at).getTime();
+          const remaining = Math.max(0, Math.floor((autoRejectAt - now) / 1000));
+          timersText = `До автоотклонения: ${formatSeconds(remaining)}`;
+        }
+        if (data.break_end_at) {
+          const breakEndAt = new Date(data.break_end_at).getTime();
+          const remaining = Math.floor((breakEndAt - now) / 1000);
+          if (remaining >= 0) {
+            timersText = `До конца перерыва: ${formatSeconds(remaining)}`;
+          } else {
+            timersText = `Перерасход: ${formatSeconds(Math.abs(remaining))}`;
+          }
+        }
+        timersLabel.textContent = timersText;
+        if (data.cooldown_remaining_seconds) {
+          cooldownLabel.textContent = `Таймаут между перерывами: ${formatSeconds(data.cooldown_remaining_seconds)}`;
+        } else {
+          cooldownLabel.textContent = "";
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    document.getElementById("confirmOnboarding").addEventListener("click", async () => {
+      const payload = {
+        bank: bankSelect.value,
+        department: departmentSelect.value,
+        direction: departmentSelect.value === "Кол-центр" ? directionSelect.value : null,
+      };
+      await fetch(`${apiBase}/onboarding`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Id": operatorId,
+        },
+        body: JSON.stringify(payload),
+      });
+      await fetchStatus();
+    });
+
+    newRequestBtn.addEventListener("click", async () => {
+      await fetch(`${apiBase}/requests`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Id": operatorId,
+        },
+        body: JSON.stringify({ duration_minutes: Number(durationSelect.value) }),
+      });
+      await fetchStatus();
+    });
+
+    startBreakBtn.addEventListener("click", async () => {
+      const response = await fetch(`${apiBase}/operator`, {
+        headers: { "X-User-Id": operatorId },
+      });
+      const data = await response.json();
+      const requestId = data.latest_request?.id;
+      if (!requestId) return;
+      await fetch(`${apiBase}/requests/${requestId}/start`, {
+        method: "POST",
+        headers: { "X-User-Id": operatorId },
+      });
+      await fetchStatus();
+    });
+
+    finishBreakBtn.addEventListener("click", async () => {
+      const response = await fetch(`${apiBase}/operator`, {
+        headers: { "X-User-Id": operatorId },
+      });
+      const data = await response.json();
+      const requestId = data.latest_request?.id;
+      if (!requestId) return;
+      await fetch(`${apiBase}/requests/${requestId}/finish`, {
+        method: "POST",
+        headers: { "X-User-Id": operatorId },
+      });
+      await fetchStatus();
+    });
+
+    bankSelect.addEventListener("change", updateDepartments);
+    departmentSelect.addEventListener("change", updateDirections);
+
+    updateDepartments();
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>
